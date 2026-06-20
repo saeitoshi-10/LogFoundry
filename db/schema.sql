@@ -62,3 +62,7 @@ CREATE INDEX IF NOT EXISTS logs_service_level
 CREATE INDEX IF NOT EXISTS logs_trace_id
     ON logs (trace_id)
     WHERE trace_id IS NOT NULL;
+
+-- Global sort index for API queries without service/level filters
+CREATE INDEX IF NOT EXISTS logs_timestamp
+    ON logs (timestamp DESC);
