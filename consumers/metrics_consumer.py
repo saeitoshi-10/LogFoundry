@@ -78,13 +78,13 @@ class MetricsConsumer(BaseConsumer):
         service = payload.get("service", "unknown")
         level = payload.get("level", "UNKNOWN")
 
-        # Pipeline batches all INCR commands into a single Redis round trip.
+        # Pipeline batches all commands into a single Redis round trip.
         # This is a significant performance optimization for high-throughput counters.
         pipe = self._redis.pipeline(transaction=False)
         pipe.incr("metrics:total")
-        pipe.incr(f"metrics:service:{service}")
-        pipe.incr(f"metrics:level:{level}")
-        pipe.incr(f"metrics:service:{service}:level:{level}")
+        pipe.hincrby("metrics:services", service, 1)
+        pipe.hincrby("metrics:levels", level, 1)
+        pipe.hincrby("metrics:service_levels", f"{service}:{level}", 1)
         await pipe.execute()
 
         logger.debug(

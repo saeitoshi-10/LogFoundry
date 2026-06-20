@@ -240,43 +240,36 @@ async def get_metrics(request: Request, response: Response):
     lines.append("# HELP logfoundry_logs_by_service Log events by service")
     lines.append("# TYPE logfoundry_logs_by_service counter")
 
-    service_keys = await redis.keys("metrics:service:*")
-    for key in sorted(service_keys):
-        key_str = key.decode() if isinstance(key, bytes) else key
-        # Skip cross-dimension keys (metrics:service:X:level:Y)
-        parts = key_str.split(":")
-        if len(parts) == 3:  # metrics:service:{name}
-            service_name = parts[2]
-            val = await redis.get(key_str)
-            lines.append(f'logfoundry_logs_by_service{{service="{service_name}"}} {int(val) if val else 0}')
+    services_map = await redis.hgetall("metrics:services")
+    for service_name_bytes, val_bytes in sorted(services_map.items()):
+        service_name = service_name_bytes.decode() if isinstance(service_name_bytes, bytes) else service_name_bytes
+        val = val_bytes.decode() if isinstance(val_bytes, bytes) else val_bytes
+        lines.append(f'logfoundry_logs_by_service{{service="{service_name}"}} {int(val) if val else 0}')
 
     # Per-level metrics
     lines.append("")
     lines.append("# HELP logfoundry_logs_by_level Log events by level")
     lines.append("# TYPE logfoundry_logs_by_level counter")
 
-    level_keys = await redis.keys("metrics:level:*")
-    for key in sorted(level_keys):
-        key_str = key.decode() if isinstance(key, bytes) else key
-        parts = key_str.split(":")
-        if len(parts) == 3:  # metrics:level:{name}
-            level_name = parts[2]
-            val = await redis.get(key_str)
-            lines.append(f'logfoundry_logs_by_level{{level="{level_name}"}} {int(val) if val else 0}')
+    levels_map = await redis.hgetall("metrics:levels")
+    for level_name_bytes, val_bytes in sorted(levels_map.items()):
+        level_name = level_name_bytes.decode() if isinstance(level_name_bytes, bytes) else level_name_bytes
+        val = val_bytes.decode() if isinstance(val_bytes, bytes) else val_bytes
+        lines.append(f'logfoundry_logs_by_level{{level="{level_name}"}} {int(val) if val else 0}')
 
     # Alert counters
     lines.append("")
     lines.append("# HELP logfoundry_alerts_total Alerts triggered by pattern matching")
     lines.append("# TYPE logfoundry_alerts_total counter")
 
-    alert_keys = await redis.keys("alerts:*")
-    for key in sorted(alert_keys):
-        key_str = key.decode() if isinstance(key, bytes) else key
+    alerts_map = await redis.hgetall("metrics:alerts")
+    for key_bytes, val_bytes in sorted(alerts_map.items()):
+        key_str = key_bytes.decode() if isinstance(key_bytes, bytes) else key_bytes
+        val = val_bytes.decode() if isinstance(val_bytes, bytes) else val_bytes
         parts = key_str.split(":")
-        if len(parts) == 3:  # alerts:{service}:{level}
-            alert_service = parts[1]
-            alert_level = parts[2]
-            val = await redis.get(key_str)
+        if len(parts) == 2:  # {service}:{level}
+            alert_service = parts[0]
+            alert_level = parts[1]
             lines.append(
                 f'logfoundry_alerts_total{{service="{alert_service}",level="{alert_level}"}} {int(val) if val else 0}'
             )

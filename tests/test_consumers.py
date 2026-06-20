@@ -175,7 +175,7 @@ class TestAlertConsumer:
         await consumer.process(message)
 
         # Verify Redis counter was incremented
-        count = await redis_client.get("alerts:payments-api:ERROR")
+        count = await redis_client.hget("metrics:alerts", "payments-api:ERROR")
         assert count == "1"
 
     @pytest.mark.asyncio
@@ -196,7 +196,7 @@ class TestAlertConsumer:
         await consumer.process(message)
 
         # Counter should remain None
-        count = await redis_client.get("alerts:test-service:INFO")
+        count = await redis_client.hget("metrics:alerts", "test-service:INFO")
         assert count is None
 
 
@@ -276,11 +276,11 @@ class TestMetricsConsumer:
         total = await redis_client.get("metrics:total")
         assert total == "1"
 
-        svc = await redis_client.get(f"metrics:service:{sample_log_event['service']}")
+        svc = await redis_client.hget("metrics:services", sample_log_event['service'])
         assert svc == "1"
 
-        lvl = await redis_client.get(f"metrics:level:{sample_log_event['level']}")
+        lvl = await redis_client.hget("metrics:levels", sample_log_event['level'])
         assert lvl == "1"
 
-        svclvl = await redis_client.get(f"metrics:service:{sample_log_event['service']}:level:{sample_log_event['level']}")
+        svclvl = await redis_client.hget("metrics:service_levels", f"{sample_log_event['service']}:{sample_log_event['level']}")
         assert svclvl == "1"

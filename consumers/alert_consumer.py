@@ -180,7 +180,7 @@ class AlertConsumer(BaseConsumer):
 
         # Increment Redis counter
         try:
-            await self._redis.incr(f"alerts:{service}:{level}")
+            await self._redis.hincrby("metrics:alerts", f"{service}:{level}", 1)
         except Exception as e:
             logger.error(f"Failed to increment alert counter: {e}")
 
