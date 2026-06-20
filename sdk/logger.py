@@ -63,6 +63,7 @@ class Logger:
         async_mode: bool = True,
         batch_size: int = 50,
         flush_interval: float = 2.0,
+        max_buffer_size: int = 10000,
         verbose: bool = False,
     ) -> None:
         self._service = service
@@ -70,11 +71,13 @@ class Logger:
         self._async_mode = async_mode
         self._batch_size = batch_size
         self._flush_interval = flush_interval
+        self._max_buffer_size = max_buffer_size
         self._verbose = verbose
 
         self._buffer: List[Dict[str, Any]] = []
         self._lock = threading.Lock()
         self._closed = False
+        self._last_warning_time = 0.0
 
         # Start background flush thread if async_mode is enabled
         if self._async_mode:
@@ -131,6 +134,17 @@ class Logger:
 
         events_to_send = None
         with self._lock:
+            if len(self._buffer) >= self._max_buffer_size:
+                now = time.monotonic()
+                if now - self._last_warning_time > 5.0:
+                    print(
+                        f"[logfoundry] WARNING: SDK buffer full ({self._max_buffer_size} events). "
+                        "Dropping logs to prevent OOM. Check backend API.",
+                        file=sys.stderr,
+                    )
+                    self._last_warning_time = now
+                return
+
             self._buffer.append(event)
             if not self._async_mode or len(self._buffer) >= self._batch_size:
                 events_to_send = self._buffer[:]
