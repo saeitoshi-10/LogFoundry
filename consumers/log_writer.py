@@ -153,6 +153,7 @@ class LogWriterConsumer(BaseConsumer):
 
                     # Parse all messages in the batch
                     rows = []
+                    valid_messages = []
                     failed_messages = []
                     for message in batch:
                         try:
@@ -170,6 +171,7 @@ class LogWriterConsumer(BaseConsumer):
                                 payload.get("trace_id"),
                                 json.dumps(payload.get("metadata")) if payload.get("metadata") else None,
                             ))
+                            valid_messages.append(message)
                         except Exception as e:
                             logger.warning(
                                 f"Failed to parse message: {e}",
@@ -182,8 +184,25 @@ class LogWriterConsumer(BaseConsumer):
 
                     # Bulk insert — executemany is significantly faster than individual inserts
                     if rows:
-                        async with self._pg_pool.acquire() as conn:
-                            await conn.executemany(INSERT_SQL, rows)
+                        try:
+                            async with self._pg_pool.acquire() as conn:
+                                await conn.executemany(INSERT_SQL, rows)
+                        except Exception as batch_err:
+                            logger.warning(
+                                f"Batch insert failed ({batch_err}), falling back to single inserts",
+                                extra={"partition": tp.partition}
+                            )
+                            # Fallback: insert one-by-one to isolate the poison pill
+                            async with self._pg_pool.acquire() as conn:
+                                for row, msg in zip(rows, valid_messages):
+                                    try:
+                                        await conn.execute(INSERT_SQL, *row)
+                                    except Exception as single_err:
+                                        logger.error(
+                                            f"Poison pill detected: {single_err}",
+                                            extra={"partition": msg.partition, "offset": msg.offset}
+                                        )
+                                        failed_messages.append(msg)
 
                     # Route unparseable messages to dead-letter
                     for msg in failed_messages:

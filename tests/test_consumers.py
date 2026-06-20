@@ -247,6 +247,66 @@ class TestLogWriter:
             count = await conn.fetchval("SELECT COUNT(*) FROM logs WHERE id = $1", payload["id"])
             assert count == 1
 
+    @pytest.mark.asyncio
+    async def test_log_writer_poison_pill_fallback(self, pg_pool, sample_kafka_message):
+        """Verify that a DB batch failure falls back to single inserts and dead-letters the poison pill."""
+        from log_writer import LogWriterConsumer
+        import json
+        import uuid
+        from unittest.mock import AsyncMock, MagicMock
+
+        consumer = LogWriterConsumer()
+        consumer._pg_pool = pg_pool
+        consumer._consumer = AsyncMock()
+        consumer._send_to_dead_letter = AsyncMock()
+
+        # Create a valid message
+        valid_msg = MagicMock()
+        valid_payload = json.loads(sample_kafka_message.value.decode("utf-8"))
+        valid_payload["id"] = str(uuid.uuid4())
+        valid_msg.value = json.dumps(valid_payload).encode("utf-8")
+        valid_msg.partition = 0
+        valid_msg.offset = 1
+
+        # Create a DB-level POISON PILL message (timestamp out of partition bounds, e.g. year 1999)
+        poison_msg = MagicMock()
+        poison_payload = valid_payload.copy()
+        poison_payload["id"] = str(uuid.uuid4())
+        poison_payload["timestamp"] = "1999-01-01T00:00:00Z"
+        poison_msg.value = json.dumps(poison_payload).encode("utf-8")
+        poison_msg.partition = 0
+        poison_msg.offset = 2
+
+        # Mock getmany to return our batch once, then stop the consumer loop
+        class TopicPartitionMock:
+            partition = 0
+            
+        async def mock_getmany(*args, **kwargs):
+            consumer._running = False # Stop loop after first iteration
+            return {TopicPartitionMock(): [valid_msg, poison_msg]}
+            
+        consumer._consumer.getmany.side_effect = mock_getmany
+        consumer._running = True
+
+        # Run the loop
+        await consumer._consume_loop()
+
+        # Assert valid message made it into the DB
+        async with pg_pool.acquire() as conn:
+            count = await conn.fetchval("SELECT COUNT(*) FROM logs WHERE id = $1", valid_payload["id"])
+            assert count == 1
+
+        # Assert poison message did NOT make it into the DB
+        async with pg_pool.acquire() as conn:
+            count = await conn.fetchval("SELECT COUNT(*) FROM logs WHERE id = $1", poison_payload["id"])
+            assert count == 0
+
+        # Assert poison message was sent to dead letter queue
+        consumer._send_to_dead_letter.assert_called_once_with(poison_msg)
+        
+        # Assert Kafka offset was committed!
+        consumer._consumer.commit.assert_called_once()
+
 
 # ============================================================
 # MetricsConsumer tests
