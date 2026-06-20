@@ -1,0 +1,29 @@
+# LogFoundry Alert Rules
+#
+# Each rule defines a regex pattern and a severity level.
+# The AlertConsumer matches log messages against these patterns
+# and fires alerts when a match is found.
+#
+# To add a new rule:
+#   1. Add a new entry under 'rules'
+#   2. 'pattern' is a Python regex (case-insensitive matching)
+#   3. 'severity' indicates the minimum severity of the alert
+
+rules:
+  - pattern: "OutOfMemoryError"
+    severity: CRITICAL
+
+  - pattern: "connection refused"
+    severity: ERROR
+
+  - pattern: "5[0-9]{2} status"
+    severity: WARNING
+
+  - pattern: "deadlock detected"
+    severity: CRITICAL
+
+  - pattern: "timeout exceeded"
+    severity: ERROR
+
+  - pattern: "disk space"
+    severity: WARNING
