@@ -273,3 +273,64 @@ class TestPostgresIntegration:
             assert len(results) == 1
             assert results[0]["service"] == "db"
             assert results[0]["message"] == "connection timeout"
+
+
+# ============================================================
+# API Endpoint Integration Tests (HTTP Layer)
+# ============================================================
+
+
+class TestQueryEndpoints:
+    """End-to-End HTTP integration tests for the query and metrics endpoints."""
+
+    @pytest.mark.asyncio
+    async def test_query_endpoint_integration(self, async_client, pg_pool):
+        """
+        Verify GET /query fetches data from Postgres and utilizes the Redis cache.
+        """
+        # 1. Insert a known record directly into Postgres
+        event_id = '33333333-3333-3333-3333-333333333333'
+        async with pg_pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO logs (id, service, level, message, timestamp) VALUES "
+                "($1, 'test-e2e', 'CRITICAL', 'API test message', $2)",
+                event_id, datetime(2026, 6, 20, 12, 0, 0, tzinfo=timezone.utc)
+            )
+
+        # 2. Call the HTTP endpoint (First hit -> Cache miss)
+        response1 = await async_client.get("/query?service=test-e2e&level=CRITICAL")
+        assert response1.status_code == 200
+        data1 = response1.json()
+        
+        assert data1["count"] == 1
+        assert data1["results"][0]["id"] == event_id
+        assert data1["results"][0]["message"] == 'API test message'
+        assert data1["cache_hit"] is False
+
+        # 3. Call the exact same endpoint again (Second hit -> Cache hit)
+        response2 = await async_client.get("/query?service=test-e2e&level=CRITICAL")
+        assert response2.status_code == 200
+        data2 = response2.json()
+        
+        assert data2["count"] == 1
+        assert data2["cache_hit"] is True
+
+    @pytest.mark.asyncio
+    async def test_metrics_endpoint_integration(self, async_client, redis_client):
+        """
+        Verify GET /metrics fetches from Redis Hashes and formats as Prometheus exposition.
+        """
+        # 1. Seed the Redis Hash directly (simulating what MetricsConsumer does)
+        await redis_client.hincrby("metrics:services", "test-metrics-service", 42)
+        await redis_client.hincrby("metrics:levels", "CRITICAL", 7)
+        await redis_client.hincrby("metrics:alerts", "test-metrics-service:CRITICAL", 3)
+
+        # 2. Call the HTTP endpoint
+        response = await async_client.get("/metrics")
+        assert response.status_code == 200
+        
+        # 3. Verify Prometheus exposition text format
+        text = response.text
+        assert 'logfoundry_logs_by_service{service="test-metrics-service"} 42' in text
+        assert 'logfoundry_logs_by_level{level="CRITICAL"} 7' in text
+        assert 'logfoundry_alerts_total{service="test-metrics-service",level="CRITICAL"} 3' in text

@@ -204,3 +204,52 @@ class TestRateLimiter:
         
         # Client 2 is still allowed
         assert await limiter.check("client-2") is True
+
+
+# ============================================================
+# API Endpoint Integration Tests
+# ============================================================
+
+
+class TestIngestEndpoints:
+    """End-to-End integration tests for the FastAPI HTTP endpoints."""
+
+    @pytest.mark.asyncio
+    async def test_ingest_returns_202(self, async_client):
+        """Valid event returns 202 Accepted via the /ingest endpoint."""
+        payload = {
+            "service": "test-service",
+            "level": "INFO",
+            "message": "Testing single ingest API",
+        }
+        response = await async_client.post("/ingest", json=payload)
+        
+        assert response.status_code == 202
+        data = response.json()
+        assert data["status"] == "accepted"
+        assert "id" in data
+
+    @pytest.mark.asyncio
+    async def test_ingest_batch(self, async_client):
+        """Batch endpoint accepts multiple events and returns 202."""
+        payload = {
+            "events": [
+                {
+                    "service": "test-service",
+                    "level": "INFO",
+                    "message": "Batch event 1",
+                },
+                {
+                    "service": "test-service",
+                    "level": "ERROR",
+                    "message": "Batch event 2",
+                }
+            ]
+        }
+        response = await async_client.post("/ingest/batch", json=payload)
+        
+        assert response.status_code == 202
+        data = response.json()
+        assert data["status"] == "accepted"
+        assert data["count"] == 2
+        assert len(data["ids"]) == 2

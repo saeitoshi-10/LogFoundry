@@ -284,3 +284,76 @@ class TestMetricsConsumer:
 
         svclvl = await redis_client.hget("metrics:service_levels", f"{sample_log_event['service']}:{sample_log_event['level']}")
         assert svclvl == "1"
+
+
+# ============================================================
+# End-to-End Consumer Integration Tests
+# ============================================================
+
+class TestEndToEndConsumerFlow:
+    """True End-to-End tests verifying the AIOKafkaConsumer polling loop."""
+
+    @pytest.mark.asyncio
+    async def test_log_writer_e2e_flow(self, kafka_container, postgres_container, kafka_producer, pg_pool):
+        """
+        Verify the entire consumer loop:
+        1. Start real consumer connected to Testcontainers
+        2. Publish message to Kafka
+        3. Consumer automatically polls, parses, and writes to Postgres
+        4. Stop consumer
+        """
+        from log_writer import LogWriterConsumer
+        import os
+        import json
+        import asyncio
+        from uuid import uuid4
+
+        # Set environment variables for the consumer
+        os.environ["KAFKA_BOOTSTRAP"] = kafka_container.get_bootstrap_server()
+        os.environ["POSTGRES_DSN"] = postgres_container.get_connection_url().replace("postgresql+psycopg2", "postgresql")
+
+        # Initialize consumer
+        consumer = LogWriterConsumer()
+        
+        # Start consumer loop in the background
+        consumer_task = asyncio.create_task(consumer.start())
+        
+        try:
+            # Wait a moment for consumer to join group and rebalance
+            await asyncio.sleep(2)
+            
+            # Produce a real message to Kafka
+            event_id = str(uuid4())
+            payload = {
+                "id": event_id,
+                "service": "e2e-test-service",
+                "level": "INFO",
+                "message": "This is a true E2E test message",
+                "timestamp": "2026-06-20T10:00:00+00:00",
+            }
+            
+            await kafka_producer.send_and_wait(
+                consumer.topic,
+                key=b"e2e-test-service",
+                value=json.dumps(payload).encode("utf-8"),
+            )
+            
+            # Give the consumer time to poll and process
+            await asyncio.sleep(2)
+            
+            # Verify the message was written to Postgres by the consumer's background loop!
+            async with pg_pool.acquire() as conn:
+                row = await conn.fetchrow("SELECT * FROM logs WHERE id = $1", event_id)
+                assert row is not None
+                assert row["service"] == "e2e-test-service"
+                assert row["message"] == "This is a true E2E test message"
+        
+        finally:
+            # Clean up
+            consumer._running = False
+            # Cancel the task since consumer.start() is an infinite loop that might block
+            consumer_task.cancel()
+            try:
+                await consumer_task
+            except asyncio.CancelledError:
+                pass
