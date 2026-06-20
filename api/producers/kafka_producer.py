@@ -44,6 +44,7 @@ class KafkaLogProducer:
         self._bootstrap_servers = bootstrap_servers
         self._topic = topic
         self._producer: Optional[AIOKafkaProducer] = None
+        self._background_tasks: set[asyncio.Task] = set()
 
     async def start(self) -> None:
         """Initialize and start the Kafka producer."""
@@ -69,6 +70,10 @@ class KafkaLogProducer:
 
     async def stop(self) -> None:
         """Gracefully stop the producer, flushing any pending messages."""
+        if self._background_tasks:
+            logger.info(f"Waiting for {len(self._background_tasks)} background tasks to finish...")
+            await asyncio.gather(*self._background_tasks, return_exceptions=True)
+            
         if self._producer:
             await self._producer.stop()
             logger.info("Kafka producer stopped")
@@ -141,7 +146,10 @@ class KafkaLogProducer:
                 # event loop's exception handler.
                 pass
 
-        return asyncio.create_task(_produce_with_error_handling())
+        task = asyncio.create_task(_produce_with_error_handling())
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        return task
 
     async def health_check(self) -> bool:
         """Check if the producer is connected to the Kafka cluster."""
