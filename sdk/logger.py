@@ -2,18 +2,24 @@
 LogFoundry SDK Logger — Plug-and-play Python client for log ingestion.
 
 Usage:
-    from logfoundry.sdk.logger import Logger
+    import logging
+    from logfoundry.sdk.logger import LogFoundryHandler
 
-    log = Logger(
+    # Set up the standard Python logger
+    logger = logging.getLogger("payments")
+    logger.setLevel(logging.INFO)
+
+    # Attach the LogFoundry handler
+    handler = LogFoundryHandler(
         service="payments-api",
         endpoint="http://localhost:8000",
-        async_mode=True,   # non-blocking, fire-and-forget HTTP
-        batch_size=50,      # buffer up to 50 events before flushing
-        flush_interval=2,   # flush every 2 seconds regardless
+        async_mode=True,
     )
+    logger.addHandler(handler)
 
-    log.info("Payment processed", amount=99.99, user_id="u_123")
-    log.error("DB connection failed", host="pg-primary", retry=3)
+    # Use standard logging calls
+    logger.info("Payment processed", extra={"amount": 99.99, "user_id": "u_123"})
+    logger.error("DB connection failed", extra={"host": "pg-primary"})
 
 Design decisions:
   - Background thread (not asyncio) for flushing: the SDK may be used in
@@ -30,6 +36,7 @@ from __future__ import annotations
 
 import atexit
 import json
+import logging
 import sys
 import threading
 import time
@@ -40,7 +47,7 @@ from typing import Any, Dict, List, Literal, Optional
 from uuid import uuid4
 
 
-class Logger:
+class LogFoundryHandler(logging.Handler):
     """
     LogFoundry SDK client — buffer, batch, and ship log events.
 
@@ -65,7 +72,9 @@ class Logger:
         flush_interval: float = 2.0,
         max_buffer_size: int = 10000,
         verbose: bool = False,
+        level: int = logging.NOTSET,
     ) -> None:
+        super().__init__(level=level)
         self._service = service
         self._endpoint = endpoint.rstrip("/")
         self._async_mode = async_mode
@@ -91,45 +100,41 @@ class Logger:
         # Register atexit handler to flush remaining buffer on process exit
         atexit.register(self._atexit_flush)
 
-    def debug(self, message: str, **kwargs: Any) -> None:
-        """Log a DEBUG level event."""
-        self._log("DEBUG", message, **kwargs)
-
-    def info(self, message: str, **kwargs: Any) -> None:
-        """Log an INFO level event."""
-        self._log("INFO", message, **kwargs)
-
-    def warning(self, message: str, **kwargs: Any) -> None:
-        """Log a WARNING level event."""
-        self._log("WARNING", message, **kwargs)
-
-    def error(self, message: str, **kwargs: Any) -> None:
-        """Log an ERROR level event."""
-        self._log("ERROR", message, **kwargs)
-
-    def critical(self, message: str, **kwargs: Any) -> None:
-        """Log a CRITICAL level event."""
-        self._log("CRITICAL", message, **kwargs)
-
-    def _log(
-        self,
-        level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
-        message: str,
-        **kwargs: Any,
-    ) -> None:
+    def emit(self, record: logging.LogRecord) -> None:
         """
-        Create a log event and add it to the buffer.
-
-        If async_mode is disabled, flushes immediately after adding.
-        If async_mode is enabled, the background thread handles flushing.
+        Process a log record and add it to the buffer.
         """
+        try:
+            message = self.format(record)
+        except Exception:
+            message = record.getMessage()
+
+        # Extract standard logging metadata
+        metadata = {
+            "logger_name": record.name,
+            "module": record.module,
+            "funcName": record.funcName,
+            "lineno": record.lineno,
+        }
+        
+        # Capture custom attributes added via 'extra' dictionary
+        standard_attrs = {
+            'args', 'asctime', 'created', 'exc_info', 'exc_text', 'filename', 
+            'funcName', 'levelname', 'levelno', 'lineno', 'module', 'msecs', 
+            'message', 'msg', 'name', 'pathname', 'process', 'processName', 
+            'relativeCreated', 'stack_info', 'thread', 'threadName', 'taskName'
+        }
+        for key, value in record.__dict__.items():
+            if key not in standard_attrs:
+                metadata[key] = value
+
         event = {
             "id": str(uuid4()),
             "service": self._service,
-            "level": level,
+            "level": record.levelname,
             "message": message,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "metadata": kwargs if kwargs else None,
+            "timestamp": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
+            "metadata": metadata,
         }
 
         events_to_send = None
@@ -252,6 +257,6 @@ class Logger:
 
     def __repr__(self) -> str:
         return (
-            f"Logger(service={self._service!r}, endpoint={self._endpoint!r}, "
+            f"LogFoundryHandler(service={self._service!r}, endpoint={self._endpoint!r}, "
             f"async_mode={self._async_mode}, batch_size={self._batch_size})"
         )

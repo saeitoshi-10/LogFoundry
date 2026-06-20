@@ -27,7 +27,7 @@ echo -e "${NC}"
 # Wait for API to be healthy
 echo -e "${YELLOW}⏳ Waiting for API to be healthy...${NC}"
 for i in $(seq 1 30); do
-    if curl -s "${API_URL}/health" > /dev/null 2>&1; then
+    if curl -s "${API_URL}/health/ready" > /dev/null 2>&1; then
         echo -e "${GREEN}✅ API is healthy!${NC}"
         break
     fi
@@ -39,7 +39,7 @@ for i in $(seq 1 30); do
 done
 
 echo ""
-curl -s "${API_URL}/health" | python3 -m json.tool
+curl -s "${API_URL}/health/ready" | python3 -m json.tool
 echo ""
 
 # ============================================================
@@ -126,7 +126,8 @@ curl -s "${API_URL}/metrics"
 # 6. Health check
 # ============================================================
 echo -e "\n${BLUE}${BOLD}━━━ Step 6: Health Check ━━━${NC}"
-curl -s "${API_URL}/health" | python3 -m json.tool
+echo "Check health status after load..."
+curl -s "${API_URL}/health/ready" | python3 -m json.tool
 
 # ============================================================
 # Summary

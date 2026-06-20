@@ -124,18 +124,26 @@ pip install -e .
 ```
 
 ```python
-from sdk.logger import Logger
+import logging
+from sdk.logger import LogFoundryHandler
 
-log = Logger(
+# Set up standard Python logger
+logger = logging.getLogger("payments")
+logger.setLevel(logging.INFO)
+
+# Attach the LogFoundry handler
+handler = LogFoundryHandler(
     service="payments-api",
     endpoint="http://localhost:8000",
     async_mode=True,
     batch_size=50,
     flush_interval=2,
 )
+logger.addHandler(handler)
 
-log.info("Payment processed", amount=99.99, user_id="u_123")
-log.error("DB connection failed", host="pg-primary", retry=3)
+# Use standard logging calls (no changes to business logic!)
+logger.info("Payment processed", extra={"amount": 99.99, "user_id": "u_123"})
+logger.error("DB connection failed", extra={"host": "pg-primary", "retry": 3})
 ```
 
 ### 6. Tail logs in real-time

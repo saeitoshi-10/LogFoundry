@@ -21,7 +21,7 @@ import sys
 from contextlib import asynccontextmanager
 
 import asyncpg
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 try:
     from pythonjsonlogger.json import JsonFormatter
 except ImportError:
@@ -224,14 +224,23 @@ app.include_router(query.router)
 
 
 @app.get(
-    "/health",
-    response_model=HealthStatus,
-    summary="Health check",
-    description="Returns connectivity status for all backend services.",
+    "/health/live",
+    summary="Liveness check",
+    description="Lightweight check to verify the HTTP server is running.",
 )
-async def health_check():
+async def liveness_check():
+    return {"status": "alive"}
+
+
+@app.get(
+    "/health/ready",
+    response_model=HealthStatus,
+    summary="Readiness check",
+    description="Verifies connectivity to Kafka, PostgreSQL, and Redis.",
+)
+async def readiness_check(response: Response):
     """
-    Health check endpoint — verifies connectivity to Kafka, PostgreSQL, and Redis.
+    Readiness check endpoint — verifies connectivity to Kafka, PostgreSQL, and Redis.
 
     Returns HTTP 200 with individual backend status. A production load balancer
     would use this to determine if the instance is healthy enough to receive traffic.
@@ -262,6 +271,9 @@ async def health_check():
         pass
 
     all_healthy = kafka_ok and postgres_ok and redis_ok
+
+    if not all_healthy:
+        response.status_code = 503
 
     return HealthStatus(
         status="healthy" if all_healthy else "degraded",
