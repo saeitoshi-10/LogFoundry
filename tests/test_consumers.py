@@ -158,46 +158,83 @@ class TestAlertConsumer:
         assert rule.matches("Received 200 status OK") is False
 
     @pytest.mark.asyncio
-    async def test_alert_consumer_fires_on_match(self, sample_error_event, kafka_producer, redis_client):
-        """Alert consumer fires when message matches a rule."""
+    async def test_alert_consumer_e2e_flow(self, kafka_container, redis_container, kafka_producer, redis_client):
+        """
+        Verify the entire alert consumer loop:
+        1. Start real consumer connected to Testcontainers
+        2. Publish matching and non-matching messages to Kafka
+        3. Consumer automatically polls, parses, and updates Redis counters
+        4. Stop consumer
+        """
         from alert_consumer import AlertConsumer, AlertRule
+        import os
+        import json
+        import asyncio
+        from uuid import uuid4
+
+        os.environ["KAFKA_BOOTSTRAP"] = kafka_container.get_bootstrap_server()
+        os.environ["REDIS_URL"] = f"redis://{redis_container.get_container_host_ip()}:{redis_container.get_exposed_port(redis_container.port)}"
 
         consumer = AlertConsumer()
-        consumer._producer = kafka_producer
-        consumer._redis = redis_client
-        consumer._alert_rules = [
-            AlertRule(pattern="OutOfMemoryError", severity="CRITICAL"),
-        ]
-
-        message = MagicMock()
-        message.value = json.dumps(sample_error_event).encode("utf-8")
-
-        await consumer.process(message)
-
-        # Verify Redis counter was incremented
-        count = await redis_client.hget("metrics:alerts", "payments-api:ERROR")
-        assert count == "1"
-
-    @pytest.mark.asyncio
-    async def test_alert_consumer_no_match(self, sample_log_event, kafka_producer, redis_client):
-        """Alert consumer does not fire on non-matching messages."""
-        from alert_consumer import AlertConsumer, AlertRule
-
-        consumer = AlertConsumer()
-        consumer._producer = kafka_producer
-        consumer._redis = redis_client
-        consumer._alert_rules = [
-            AlertRule(pattern="OutOfMemoryError", severity="CRITICAL"),
-        ]
-
-        message = MagicMock()
-        message.value = json.dumps(sample_log_event).encode("utf-8")
-
-        await consumer.process(message)
-
-        # Counter should remain None
-        count = await redis_client.hget("metrics:alerts", "test-service:INFO")
-        assert count is None
+        
+        # Start consumer loop in the background
+        consumer_task = asyncio.create_task(consumer.start())
+        
+        try:
+            # Wait a moment for consumer to join group
+            await asyncio.sleep(2)
+            
+            # Inject rule directly into the running consumer
+            consumer._alert_rules.append(AlertRule(pattern="CRITICAL_ERROR", severity="CRITICAL"))
+            
+            # Produce a matching message
+            payload_match = {
+                "id": str(uuid4()),
+                "service": "e2e-alert-service",
+                "level": "ERROR",
+                "message": "We have a CRITICAL_ERROR here",
+                "timestamp": "2026-06-20T10:00:00+00:00",
+            }
+            
+            await kafka_producer.send_and_wait(
+                consumer.topic,
+                key=b"e2e-alert-service",
+                value=json.dumps(payload_match).encode("utf-8"),
+            )
+            
+            # Produce a non-matching message
+            payload_no_match = {
+                "id": str(uuid4()),
+                "service": "e2e-safe-service",
+                "level": "INFO",
+                "message": "Everything is fine",
+                "timestamp": "2026-06-20T10:00:00+00:00",
+            }
+            
+            await kafka_producer.send_and_wait(
+                consumer.topic,
+                key=b"e2e-safe-service",
+                value=json.dumps(payload_no_match).encode("utf-8"),
+            )
+            
+            # Give the consumer time to poll and process
+            await asyncio.sleep(2)
+            
+            # Verify Redis counter was incremented for the MATCHING message
+            count_match = await redis_client.hget("metrics:alerts", "e2e-alert-service:ERROR")
+            assert count_match == "1"
+            
+            # Verify Redis counter was NOT incremented for the NON-MATCHING message
+            count_safe = await redis_client.hget("metrics:alerts", "e2e-safe-service:INFO")
+            assert count_safe is None
+            
+        finally:
+            consumer._running = False
+            consumer_task.cancel()
+            try:
+                await consumer_task
+            except asyncio.CancelledError:
+                pass
 
 
 # ============================================================

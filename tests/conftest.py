@@ -168,6 +168,7 @@ async def async_client(redis_container, postgres_container, kafka_container):
     os.environ["REDIS_URL"] = f"redis://{redis_container.get_container_host_ip()}:{redis_container.get_exposed_port(redis_container.port)}"
     os.environ["POSTGRES_DSN"] = postgres_container.get_connection_url().replace("postgresql+psycopg2", "postgresql")
     os.environ["KAFKA_BOOTSTRAP"] = kafka_container.get_bootstrap_server()
+    os.environ["OTEL_SDK_DISABLED"] = "true"
     
     # Import app AFTER setting environment variables so the lifespan picks them up
     from main import app
