@@ -257,6 +257,23 @@ async def get_metrics(request: Request, response: Response):
         val = val_bytes.decode() if isinstance(val_bytes, bytes) else val_bytes
         lines.append(f'logfoundry_logs_by_level{{level="{level_name}"}} {int(val) if val else 0}')
 
+    # Per-service and level metrics
+    lines.append("")
+    lines.append("# HELP logfoundry_logs_by_service_level Log events by service and level")
+    lines.append("# TYPE logfoundry_logs_by_service_level counter")
+
+    service_levels_map = await redis.hgetall("metrics:service_levels")
+    for key_bytes, val_bytes in sorted(service_levels_map.items()):
+        key_str = key_bytes.decode() if isinstance(key_bytes, bytes) else key_bytes
+        val = val_bytes.decode() if isinstance(val_bytes, bytes) else val_bytes
+        parts = key_str.split(":")
+        if len(parts) == 2:  # {service}:{level}
+            sl_service = parts[0]
+            sl_level = parts[1]
+            lines.append(
+                f'logfoundry_logs_by_service_level{{service="{sl_service}",level="{sl_level}"}} {int(val) if val else 0}'
+            )
+
     # Alert counters
     lines.append("")
     lines.append("# HELP logfoundry_alerts_total Alerts triggered by pattern matching")

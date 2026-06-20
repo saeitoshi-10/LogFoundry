@@ -323,6 +323,7 @@ class TestQueryEndpoints:
         # 1. Seed the Redis Hash directly (simulating what MetricsConsumer does)
         await redis_client.hincrby("metrics:services", "test-metrics-service", 42)
         await redis_client.hincrby("metrics:levels", "CRITICAL", 7)
+        await redis_client.hincrby("metrics:service_levels", "test-metrics-service:CRITICAL", 7)
         await redis_client.hincrby("metrics:alerts", "test-metrics-service:CRITICAL", 3)
 
         # 2. Call the HTTP endpoint
@@ -333,4 +334,5 @@ class TestQueryEndpoints:
         text = response.text
         assert 'logfoundry_logs_by_service{service="test-metrics-service"} 42' in text
         assert 'logfoundry_logs_by_level{level="CRITICAL"} 7' in text
+        assert 'logfoundry_logs_by_service_level{service="test-metrics-service",level="CRITICAL"} 7' in text
         assert 'logfoundry_alerts_total{service="test-metrics-service",level="CRITICAL"} 3' in text
