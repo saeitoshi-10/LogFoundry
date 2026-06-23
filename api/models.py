@@ -66,6 +66,15 @@ class LogEvent(BaseModel):
             raise ValueError("Payload exceeds 8KB limit")
         return v
 
+    @field_validator("metadata")
+    @classmethod
+    def enforce_metadata_size(cls, v: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """Enforce 8KB encoded byte-level limit on metadata to prevent unbounded payload bloat."""
+        if v is not None:
+            if len(json.dumps(v).encode("utf-8")) > 8192:
+                raise ValueError("Metadata payload exceeds 8KB limit")
+        return v
+
     def to_kafka_bytes(self) -> bytes:
         """Serialize to JSON bytes for Kafka produce."""
         return self.model_dump_json().encode("utf-8")

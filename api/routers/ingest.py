@@ -46,8 +46,9 @@ async def check_rate_limit(request: Request, rate_limiter: RateLimiter = Depends
     Uses client IP as the rate limit key. Returns HTTP 429 with Retry-After
     header if the client has exceeded the configured limit.
     """
-    # Extract client IP (X-Forwarded-For for proxied requests)
-    client_ip = request.headers.get("X-Forwarded-For", request.client.host if request.client else "unknown")
+    # Extract client IP securely — do NOT blindly trust X-Forwarded-For
+    # unless behind a trusted reverse proxy that strips spoofed headers.
+    client_ip = request.client.host if request.client else "unknown"
 
     allowed = await rate_limiter.check(client_ip)
 

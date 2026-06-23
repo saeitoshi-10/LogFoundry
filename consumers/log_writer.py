@@ -44,7 +44,12 @@ INSERT_SQL = """
 
 class LogWriterConsumer(BaseConsumer):
     """
-    Kafka consumer that batch-inserts log events into PostgreSQL.
+    Kafka consumer that reads log events and writes them to PostgreSQL.
+    
+    NOTE: This consumer intentionally overrides `_consume_loop` and DOES NOT use 
+    the `_run_with_retry` exponential backoff provided by `BaseConsumer`. This is 
+    a deliberate design tradeoff to optimize for high-throughput batch insertion 
+    (`executemany`) while still isolating poison pills via a row-by-row fallback.
 
     Responsibilities:
       - Deserialize LogEvent JSON from Kafka messages

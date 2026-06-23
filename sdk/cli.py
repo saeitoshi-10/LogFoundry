@@ -161,7 +161,8 @@ def tail(
 
     # Track last seen timestamp to avoid duplicates
     last_seen_ts = since_dt.isoformat() if since_dt else None
-    seen_ids = set()
+    # Python 3.7+ dicts preserve insertion order, allowing safe slicing
+    seen_ids = {}
 
     click.echo(click.style("🔭 LogFoundry — Tailing logs...", bold=True, fg="cyan"))
     click.echo(f"   Endpoint: {endpoint}")
@@ -191,7 +192,7 @@ def tail(
             for entry in results:
                 entry_id = entry.get("id")
                 if entry_id and entry_id not in seen_ids:
-                    seen_ids.add(entry_id)
+                    seen_ids[entry_id] = True
                     new_entries.append(entry)
 
             # Print new entries (oldest first)
@@ -208,9 +209,9 @@ def tail(
             if not follow:
                 break
 
-            # Limit seen_ids set size to prevent memory growth
+            # Limit seen_ids size to prevent memory growth (safe ordered slice via dict)
             if len(seen_ids) > 10000:
-                seen_ids = set(list(seen_ids)[-5000:])
+                seen_ids = dict(list(seen_ids.items())[-5000:])
 
             time.sleep(2)
 
