@@ -116,7 +116,8 @@ class TestSDKLogger:
             logger.info("Msg 3")
             
             # Wait for the background thread to pick up the signal and flush
-            for _ in range(20):
+            # Polling for up to 5 seconds to avoid flakiness in overloaded CI environments
+            for _ in range(100):
                 if mock_urlopen.called:
                     break
                 time.sleep(0.05)

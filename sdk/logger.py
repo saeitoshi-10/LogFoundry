@@ -140,6 +140,10 @@ class LogFoundryHandler(logging.Handler):
 
         events_to_send = None
         with self._lock:
+            if self._closed:
+                # Process is shutting down, reject to avoid hanging the process or losing events
+                return
+
             if len(self._buffer) >= self._max_buffer_size:
                 now = time.monotonic()
                 if now - self._last_warning_time > 5.0:

@@ -74,6 +74,12 @@ async def manage_partitions(db_url: str, create_months: int, retain_months: int)
         
         for row in rows:
             p_name = row["partition_name"]
+            
+            # Defensive validation against DDL injection, mirroring the create path
+            if not re.match(r"^logs_\d{4}_\d{2}$", p_name):
+                logger.warning(f"Skipping drop for incorrectly named partition: {p_name}")
+                continue
+                
             # Expected format: logs_YYYY_MM
             try:
                 parts = p_name.split('_')

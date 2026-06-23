@@ -191,7 +191,10 @@ class LogWriterConsumer(BaseConsumer):
                         except Exception as batch_err:
                             logger.warning(
                                 f"Batch insert failed ({batch_err}), falling back to single inserts",
-                                extra={"partition": tp.partition}
+                                extra={
+                                    "partition": tp.partition,
+                                    "batch_insert_fallback_triggered": 1
+                                }
                             )
                             # Fallback: insert one-by-one to isolate the poison pill
                             async with self._pg_pool.acquire() as conn:
