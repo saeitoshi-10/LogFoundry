@@ -15,10 +15,9 @@ Algorithm:
   6. EXPIRE key to window_seconds (garbage collection for inactive keys)
   7. Return True (allowed)
 
-The entire check-and-add sequence runs in a Redis pipeline to minimize round trips.
-In a distributed deployment, this is not strictly atomic — but for a single-broker
-demo setup, pipeline batching is sufficient. For true atomicity, a Lua script
-would be the next step.
+The entire check-and-add sequence runs atomically via a Redis Lua script.
+This ensures there are no race conditions between checking the count and
+adding a new request.
 """
 
 from __future__ import annotations
@@ -114,6 +113,10 @@ class RateLimiter:
         """
         Get the number of remaining requests in the current window.
         Executes atomically via a Redis Lua script to ensure the read is not a stale snapshot.
+        
+        NOTE: This is advisory only. Always call check() to actually enforce the limit.
+        Never gate behavior purely on get_remaining(), as a concurrent request could
+        consume the quota between get_remaining() and check().
         """
         key = f"ratelimit:{client_id}:{self._window_seconds}"
         now_ms = int(time.time() * 1000)

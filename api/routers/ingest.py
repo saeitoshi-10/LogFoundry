@@ -115,6 +115,11 @@ async def ingest_batch(
 
     Each event is individually fire-and-forget produced to Kafka.
     The batch endpoint reduces HTTP overhead for high-throughput clients.
+    
+    Tradeoff: Rate limiting is currently evaluated per HTTP request, meaning
+    a single batch request of 1000 events consumes only 1 unit of rate-limit
+    quota. This is an intentional design choice to prioritize throughput over
+    strict per-event throttling.
     """
     producer = request.app.state.kafka_producer
 

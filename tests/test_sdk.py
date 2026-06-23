@@ -114,6 +114,13 @@ class TestSDKLogger:
 
             # Add 3rd event, should trigger flush of batch_size 3
             logger.info("Msg 3")
+            
+            # Wait for the background thread to pick up the signal and flush
+            for _ in range(20):
+                if mock_urlopen.called:
+                    break
+                time.sleep(0.05)
+                
             assert len(handler._buffer) == 0
             mock_urlopen.assert_called_once()
             

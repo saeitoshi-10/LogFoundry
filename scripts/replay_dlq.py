@@ -46,11 +46,21 @@ async def replay_dlq(bootstrap_servers: str, dlq_topic: str, ingest_topic: str, 
             payload = msg.value
             
             try:
-                # Basic validation: ensure it's valid JSON
-                json.loads(payload)
+                # Extract original value from the dead-letter envelope
+                wrapper = json.loads(payload)
+                original_value = wrapper.get("original_value")
+                
+                if not original_value:
+                    logger.error(f"Message lacks original_value, cannot replay: {payload[:100]}...")
+                    await consumer.commit()
+                    continue
+                
+                # Basic validation: ensure original_value is valid JSON
+                json.loads(original_value)
                 
                 # Re-publish to ingest
-                await producer.send_and_wait(ingest_topic, payload)
+                publish_payload = original_value.encode("utf-8") if isinstance(original_value, str) else original_value
+                await producer.send_and_wait(ingest_topic, publish_payload)
                 replayed += 1
                 
                 # Commit offset after successful re-publish

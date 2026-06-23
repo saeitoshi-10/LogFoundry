@@ -186,7 +186,8 @@ class LogWriterConsumer(BaseConsumer):
                     if rows:
                         try:
                             async with self._pg_pool.acquire() as conn:
-                                await conn.executemany(INSERT_SQL, rows)
+                                async with conn.transaction():
+                                    await conn.executemany(INSERT_SQL, rows)
                         except Exception as batch_err:
                             logger.warning(
                                 f"Batch insert failed ({batch_err}), falling back to single inserts",

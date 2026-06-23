@@ -35,18 +35,15 @@ Drop in the SDK, your logs stream into Kafka, persist into partitioned PostgreSQ
 
 ## Key Features
 
-| Feature | Implementation | Interview Talking Point |
-|---------|---------------|----------------------|
-| **Sub-5ms ingestion** | Fire-and-forget `asyncio.create_task()` | Decouples API latency from Kafka round-trip |
-| **At-least-once delivery** | Offset commit after DB insert + `ON CONFLICT DO NOTHING` | Idempotent consumers handle duplicate delivery |
-| **Sliding window rate limiter** | Redis sorted sets with pipeline batching | No burst at window boundary (vs fixed window) |
-| **Partition pruning** | Monthly PostgreSQL partitions, `>=` / `<` predicates | Avoids full table scans on time-range queries |
-| **Full-text search** | GIN index on `to_tsvector('english', message)` | Sub-millisecond search across millions of logs |
-| **Query caching** | Redis with SHA256 cache keys, 30s TTL | Deterministic hashing, X-Cache header for observability |
-| **Distributed tracing** | OpenTelemetry + Jaeger | End-to-end request visibility |
-| **Graceful shutdown** | Signal handlers drain in-flight batches | No data loss on deployment |
-| **Dead-letter queue** | Failed messages routed to `logs.dead-letter` | Operational visibility into processing failures |
-| **Pattern-based alerting** | YAML regex rules, fan-out consumer pattern | Extensible without code changes |
+- **Sub-5ms Ingestion:** Fire-and-forget async producers decouple API latency from Kafka round-trips.
+- **At-Least-Once Delivery:** Idempotent consumers utilizing PostgreSQL `ON CONFLICT DO NOTHING` handle duplicate delivery seamlessly.
+- **Sliding Window Rate Limiter:** Built with Redis sorted sets, utilizing Lua scripts for atomic operations and preventing bursts at window boundaries.
+- **Partition Pruning:** Optimized time-range queries avoid full table scans via monthly PostgreSQL partitions and range predicates.
+- **Full-Text Search:** Sub-millisecond querying across millions of logs via GIN indexing.
+- **High-Performance Query Caching:** Redis caching with deterministic SHA256 hashing and TTLs to accelerate repeat queries.
+- **Distributed Tracing:** End-to-end request visibility integrated with OpenTelemetry and Jaeger.
+- **Graceful Shutdown & Resilience:** Signal handlers ensure all in-flight batches are drained without data loss during deployment. Dead-letter queues isolate parsing or processing failures.
+- **Pattern-Based Alerting:** Extensible alerting mechanism via YAML regex rules.
 
 ## Quick Start
 
@@ -174,36 +171,6 @@ chmod +x scripts/demo.sh
 | `/health` | GET | Backend connectivity status |
 | `/docs` | GET | OpenAPI/Swagger documentation |
 
-## Design Decisions & Tradeoffs
-
-### Fire-and-Forget Ingestion
-```
-API Handler → asyncio.create_task(kafka.send()) → return 202 immediately
-```
-**Tradeoff**: If the background task fails, the event is lost. We return 202 ("accepted") not 200 ("processed") to signal this semantic.
-**Mitigation**: Producers log failures to stderr; consumers handle duplicates via UUID primary key.
-
-### At-Least-Once Delivery
-```
-Consumer: poll → process (DB insert) → commit offset
-```
-**Tradeoff**: A crash between insert and commit causes re-processing.
-**Mitigation**: `ON CONFLICT DO NOTHING` on the `(id, timestamp)` primary key makes duplicate inserts a no-op.
-
-### Sliding Window Rate Limiter
-```
-Redis ZSET: score = timestamp_ms, member = timestamp_ms:random_suffix
-```
-**Advantage over fixed window**: No burst at window boundary.
-**Advantage over token bucket**: Simpler Redis ops, no separate replenishment job.
-
-### Partition Pruning
-```sql
-WHERE timestamp >= $1 AND timestamp < $2  -- uses >= and <, NOT BETWEEN
-```
-**Why not BETWEEN**: BETWEEN is inclusive on both ends, which can cause the planner to scan an extra partition on boundary values.
-
----
 
 ## Load Test & Benchmarking
 

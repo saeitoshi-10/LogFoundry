@@ -128,7 +128,7 @@ async def query_logs(
     response: Response,
     service: Optional[str] = Query(default=None, description="Filter by service name"),
     level: Optional[str] = Query(default=None, description="Filter by log level"),
-    search: Optional[str] = Query(default=None, description="Full-text search on message"),
+    search: Optional[str] = Query(default=None, max_length=8192, description="Full-text search on message"),
     since: Optional[datetime] = Query(default=None, description="Start of time range (inclusive)"),
     until: Optional[datetime] = Query(default=None, description="End of time range (exclusive)"),
     limit: int = Query(default=100, ge=1, le=1000, description="Max results to return"),

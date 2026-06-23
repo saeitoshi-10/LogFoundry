@@ -152,7 +152,13 @@ class KafkaLogProducer:
         return task
 
     async def health_check(self) -> bool:
-        """Check if the producer is connected to the Kafka cluster."""
+        """
+        Check if the producer is connected to the Kafka cluster.
+
+        WARNING: This relies on partitions_for(), which returns data from a
+        local metadata cache. It will not immediately detect if the broker
+        goes down after startup, until the cache expires or a fetch fails.
+        """
         if not self._producer:
             return False
         try:

@@ -10,6 +10,7 @@ Designed to be run safely via a daily or weekly cron job.
 import argparse
 import asyncio
 import logging
+import re
 from datetime import datetime
 
 import asyncpg
@@ -41,6 +42,12 @@ async def manage_partitions(db_url: str, create_months: int, retain_months: int)
             partition_name = f"logs_{start_of_month.strftime('%Y_%m')}"
             start_str = start_of_month.strftime('%Y-%m-%d')
             end_str = end_of_month.strftime('%Y-%m-%d')
+            
+            # Defensive validation against DDL injection (since asyncpg cannot parameterize DDL)
+            if not re.match(r"^logs_\d{4}_\d{2}$", partition_name):
+                raise ValueError(f"Invalid partition name format: {partition_name}")
+            if not re.match(r"^\d{4}-\d{2}-\d{2}$", start_str) or not re.match(r"^\d{4}-\d{2}-\d{2}$", end_str):
+                raise ValueError("Invalid date string format")
             
             query = f"""
                 CREATE TABLE IF NOT EXISTS {partition_name} PARTITION OF logs

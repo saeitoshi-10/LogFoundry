@@ -90,6 +90,7 @@ class LogFoundryHandler(logging.Handler):
 
         # Start background flush thread if async_mode is enabled
         if self._async_mode:
+            self._flush_event = threading.Event()
             self._flush_thread = threading.Thread(
                 target=self._background_flush_loop,
                 daemon=True,
@@ -151,9 +152,12 @@ class LogFoundryHandler(logging.Handler):
                 return
 
             self._buffer.append(event)
-            if not self._async_mode or len(self._buffer) >= self._batch_size:
+            if not self._async_mode:
                 events_to_send = self._buffer[:]
                 self._buffer.clear()
+            elif len(self._buffer) >= self._batch_size:
+                # Signal the background thread to flush
+                self._flush_event.set()
 
         if events_to_send:
             self._send_batch(events_to_send)
@@ -217,10 +221,13 @@ class LogFoundryHandler(logging.Handler):
         """
         Background thread that periodically flushes the buffer.
 
-        Runs every flush_interval seconds. Exits when _closed is set to True.
+        Runs every flush_interval seconds or when explicitly signaled by
+        a batch threshold. Exits when _closed is set to True.
         """
         while not self._closed:
-            time.sleep(self._flush_interval)
+            # Wait up to flush_interval seconds, or until signaled
+            self._flush_event.wait(self._flush_interval)
+            self._flush_event.clear()
             try:
                 self.flush()
             except Exception as e:
