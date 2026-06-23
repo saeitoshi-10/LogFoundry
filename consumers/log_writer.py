@@ -28,6 +28,7 @@ from typing import Optional
 from uuid import UUID
 
 import asyncpg
+from redis.asyncio import Redis
 
 from base_consumer import BaseConsumer
 
@@ -64,6 +65,7 @@ class LogWriterConsumer(BaseConsumer):
     def __init__(self) -> None:
         super().__init__()
         self._pg_pool: Optional[asyncpg.Pool] = None
+        self._redis: Optional[Redis] = None
 
     async def start(self) -> None:
         """Start the consumer with a PostgreSQL connection pool."""
@@ -79,11 +81,17 @@ class LogWriterConsumer(BaseConsumer):
         )
         logger.info("PostgreSQL pool created for LogWriterConsumer")
 
+        redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+        self._redis = Redis.from_url(redis_url, decode_responses=True)
+        logger.info("Redis connection established for LogWriterConsumer metrics")
+
         try:
             await super().start()
         finally:
             if self._pg_pool:
                 await self._pg_pool.close()
+            if self._redis:
+                await self._redis.close()
 
     async def process(self, message) -> None:
         """
@@ -193,9 +201,15 @@ class LogWriterConsumer(BaseConsumer):
                                 f"Batch insert failed ({batch_err}), falling back to single inserts",
                                 extra={
                                     "partition": tp.partition,
-                                    "batch_insert_fallback_triggered": 1
                                 }
                             )
+                            # Increment real metric instead of fake log field
+                            if self._redis:
+                                try:
+                                    await self._redis.incr("metrics:batch_insert_fallback_total")
+                                except Exception as e:
+                                    logger.error(f"Failed to increment fallback metric: {e}")
+                                    
                             # Fallback: insert one-by-one to isolate the poison pill
                             async with self._pg_pool.acquire() as conn:
                                 for row, msg in zip(rows, valid_messages):

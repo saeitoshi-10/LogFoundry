@@ -25,12 +25,17 @@ def add_months(sourcedate: datetime, months: int) -> datetime:
     return datetime(year, month, 1)
 
 
-async def manage_partitions(db_url: str, create_months: int, retain_months: int):
+async def manage_partitions(db_url: str, create_months: int, retain_months: int, now: datetime = None):
+    if create_months < 0:
+        raise ValueError("create_months cannot be negative")
+    if retain_months < 0:
+        raise ValueError("retain_months cannot be negative")
+
     logger.info(f"Connecting to database...")
     conn = await asyncpg.connect(db_url)
     
     try:
-        now = datetime.now()
+        now = now or datetime.now()
         
         # 1. Create future partitions
         logger.info(f"Ensuring partitions exist for the next {create_months} months...")

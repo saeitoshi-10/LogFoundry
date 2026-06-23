@@ -10,7 +10,14 @@ import argparse
 import asyncio
 import json
 import logging
+import sys
+import os
+
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
+
+# Ensure api directory is in python path to import models
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'api')))
+from models import LogEvent
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("replay_dlq")
@@ -55,8 +62,13 @@ async def replay_dlq(bootstrap_servers: str, dlq_topic: str, ingest_topic: str, 
                     await consumer.commit()
                     continue
                 
-                # Basic validation: ensure original_value is valid JSON
-                json.loads(original_value)
+                # Schema validation: ensure original_value is a valid LogEvent
+                try:
+                    LogEvent.model_validate_json(original_value)
+                except Exception as e:
+                    logger.error(f"Message is not a valid LogEvent, cannot replay. Skipping: {e}")
+                    await consumer.commit()
+                    continue
                 
                 # Re-publish to ingest
                 publish_payload = original_value.encode("utf-8") if isinstance(original_value, str) else original_value
