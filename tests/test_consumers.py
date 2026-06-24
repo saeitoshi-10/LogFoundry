@@ -455,3 +455,392 @@ class TestEndToEndConsumerFlow:
                 await consumer_task
             except asyncio.CancelledError:
                 pass
+
+
+# ============================================================
+# Cross-partition commit safety tests
+# ============================================================
+
+
+class TestCrossPartitionCommitSafety:
+    """Tests verifying that commit() fires after ALL partitions are processed."""
+
+    @pytest.mark.asyncio
+    async def test_commit_after_all_partitions_processed(self, kafka_container, kafka_producer):
+        """
+        True E2E cross-partition commit tracking test.
+        1. Produce messages to two different partitions.
+        2. Run LogWriterConsumer to process both.
+        3. Stop and restart consumer with the exact same group_id.
+        4. Verify zero messages are redelivered, proving offsets were
+           committed successfully for both partitions.
+        """
+        from log_writer import LogWriterConsumer
+        import os
+        from aiokafka import AIOKafkaConsumer
+
+        from aiokafka.admin import AIOKafkaAdminClient, NewTopic
+
+        bootstrap_servers = kafka_container.get_bootstrap_server()
+        topic = "test-cross-partition"
+
+        # Explicitly create topic with 2 partitions
+        admin = AIOKafkaAdminClient(bootstrap_servers=bootstrap_servers)
+        await admin.start()
+        try:
+            topic_list = [NewTopic(name=topic, num_partitions=2, replication_factor=1)]
+            await admin.create_topics(new_topics=topic_list)
+        except Exception:
+            pass  # Might already exist
+        finally:
+            await admin.close()
+
+        # Produce to explicit partitions (kafka_producer is configured for round-robin/key-based, we force partitions here)
+        await kafka_producer.send_and_wait(topic, b'{"id": "c1", "service": "test", "level": "INFO", "message": "msg1", "timestamp": "2026-06-20T10:00:00Z"}', partition=0)
+        await kafka_producer.send_and_wait(topic, b'{"id": "c2", "service": "test", "level": "INFO", "message": "msg2", "timestamp": "2026-06-20T10:00:00Z"}', partition=1)
+
+        os.environ["KAFKA_BOOTSTRAP"] = bootstrap_servers
+        consumer = LogWriterConsumer()
+        consumer.topic = topic
+        consumer.group_id = "test-commit-group"
+        consumer._pg_pool = AsyncMock()  # DB doesn't matter for offset tracking
+        consumer._redis = AsyncMock()
+        
+        # Start consumer and run loop for a short time
+        task = asyncio.create_task(consumer.start())
+        await asyncio.sleep(2)  # Give it time to join, fetch, process, and commit
+        
+        # Stop gracefully
+        consumer._running = False
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+            
+        # Spin up a raw consumer with the exact same group_id to verify offsets
+        verifier = AIOKafkaConsumer(
+            topic,
+            bootstrap_servers=bootstrap_servers,
+            group_id="test-commit-group",
+            auto_offset_reset="earliest"
+        )
+        await verifier.start()
+        
+        try:
+            # We should get a TimeoutError because all offsets were committed
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(verifier.getone(), timeout=3.0)
+        finally:
+            await verifier.stop()
+
+
+# ============================================================
+# Default partition fallback tests
+# ============================================================
+
+
+class TestDefaultPartitionFallback:
+    """Tests verifying the logs_default partition catches out-of-range timestamps."""
+
+    @pytest.mark.asyncio
+    async def test_out_of_range_timestamp_lands_in_default_partition(self, pg_pool):
+        """
+        Insert a log with a far-future timestamp (2099). With the logs_default
+        partition, this should succeed instead of raising 'no partition found'.
+        """
+        from uuid import uuid4
+        from datetime import datetime, timezone
+
+        event_id = str(uuid4())
+        future_ts = datetime(2099, 1, 1, tzinfo=timezone.utc)
+
+        async with pg_pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO logs (id, service, level, message, timestamp) "
+                "VALUES ($1, 'future-service', 'INFO', 'far future log', $2)",
+                event_id, future_ts,
+            )
+
+            # Verify row exists
+            row = await conn.fetchrow("SELECT * FROM logs WHERE id = $1", event_id)
+            assert row is not None
+            assert row["service"] == "future-service"
+
+            # Verify it landed in the default partition specifically
+            partition_name = await conn.fetchval(
+                "SELECT relname FROM pg_class WHERE oid = ("
+                "  SELECT tableoid FROM logs WHERE id = $1"
+                ")", event_id
+            )
+            assert partition_name == "logs_default"
+
+
+# ============================================================
+# Idempotency under concurrency tests
+# ============================================================
+
+
+class TestIdempotencyUnderConcurrency:
+    """Tests verifying ON CONFLICT DO NOTHING under concurrent duplicate inserts."""
+
+    @pytest.mark.asyncio
+    async def test_concurrent_duplicate_inserts(self, pg_pool, sample_kafka_message):
+        """
+        Use asyncio.gather to fire 10 concurrent _insert_single() calls
+        with the same message. Exactly 1 row should exist in Postgres.
+        
+        NOTE: This bypasses the Kafka consumer loop intentionally. A single
+        Kafka partition is processed sequentially, so true concurrent writes
+        of the same event ID only happen during a consumer group rebalance
+        or multi-instance handoff race condition. Bypassing the loop
+        allows us to accurately simulate and test the DB-level race condition
+        and transaction isolation directly.
+        """
+        from log_writer import LogWriterConsumer
+
+        consumer = LogWriterConsumer()
+        consumer._pg_pool = pg_pool
+
+        # Fire 10 concurrent inserts of the exact same message
+        await asyncio.gather(*[
+            consumer._insert_single(sample_kafka_message) for _ in range(10)
+        ])
+
+        # Verify exactly ONE row exists
+        payload = json.loads(sample_kafka_message.value.decode("utf-8"))
+        async with pg_pool.acquire() as conn:
+            count = await conn.fetchval("SELECT COUNT(*) FROM logs WHERE id = $1", payload["id"])
+            assert count == 1
+
+
+# ============================================================
+# Additional BaseConsumer retry tests
+# ============================================================
+
+
+class TestBaseConsumerRetryAdvanced:
+    """Advanced retry mechanism tests."""
+
+    @pytest.mark.asyncio
+    async def test_exponential_backoff_timing(self, sample_kafka_message, kafka_producer):
+        """Capture asyncio.sleep calls and verify they follow 1s → 2s → 4s."""
+        consumer = ConcreteTestConsumer()
+        consumer._producer = kafka_producer
+
+        consumer.process_mock.side_effect = Exception("always fail")
+
+        sleep_calls = []
+        original_sleep = asyncio.sleep
+
+        async def mock_sleep(seconds):
+            sleep_calls.append(seconds)
+
+        with patch("base_consumer.asyncio.sleep", side_effect=mock_sleep):
+            await consumer._run_with_retry(sample_kafka_message, max_retries=3)
+
+        # Should have slept twice (between attempt 1→2 and 2→3, not after final failure)
+        assert sleep_calls == [1, 2]
+
+    @pytest.mark.asyncio
+    async def test_graceful_shutdown_drains_current_batch(self):
+        """
+        Setting _running=False mid-batch still processes all messages
+        in the current getmany() result before exiting.
+        """
+        consumer = ConcreteTestConsumer()
+        consumer._consumer = AsyncMock()
+        consumer._producer = AsyncMock()
+
+        messages_processed = []
+
+        async def track_process(msg):
+            messages_processed.append(msg)
+
+        consumer.process_mock.side_effect = track_process
+
+        msg1 = MagicMock()
+        msg1.value = b'{"test": "1"}'
+        msg1.topic = "test-topic"
+        msg1.partition = 0
+        msg1.offset = 1
+
+        msg2 = MagicMock()
+        msg2.value = b'{"test": "2"}'
+        msg2.topic = "test-topic"
+        msg2.partition = 0
+        msg2.offset = 2
+
+        class TPMock:
+            partition = 0
+
+        async def mock_getmany(*args, **kwargs):
+            # Stop after this batch, but both messages should still be processed
+            consumer._running = False
+            return {TPMock(): [msg1, msg2]}
+
+        consumer._consumer.getmany.side_effect = mock_getmany
+        consumer._running = True
+
+        await consumer._consume_loop()
+
+        # Both messages in the batch should have been processed even though
+        # _running was set to False
+        assert len(messages_processed) == 2
+
+
+# ============================================================
+# Additional LogWriter tests
+# ============================================================
+
+
+class TestLogWriterFallbackIntegration:
+    """True E2E integration test for batch fallback to Dead Letter Queue."""
+
+    @pytest.mark.asyncio
+    async def test_batch_fallback_sends_to_dlq_and_increments_metric(self, kafka_container, kafka_producer, pg_pool, redis_client):
+        """
+        Trigger a batch failure with a poison pill and verify it lands in DLQ
+        and the Redis metric increments correctly using real infrastructure.
+        """
+        from log_writer import LogWriterConsumer
+        from aiokafka import AIOKafkaConsumer
+        from aiokafka.admin import AIOKafkaAdminClient, NewTopic
+        import uuid
+        import os
+
+        bootstrap_servers = kafka_container.get_bootstrap_server()
+        ingest_topic = "test-ingest-fallback"
+        dlq_topic = "test-ingest-fallback.dead-letter"
+
+        # Explicitly create topics to avoid auto-create timing issues
+        admin = AIOKafkaAdminClient(bootstrap_servers=bootstrap_servers)
+        await admin.start()
+        try:
+            await admin.create_topics(new_topics=[
+                NewTopic(name=ingest_topic, num_partitions=1, replication_factor=1),
+                NewTopic(name=dlq_topic, num_partitions=1, replication_factor=1),
+            ])
+        except Exception:
+            pass
+        finally:
+            await admin.close()
+
+        # Valid message
+        valid_id = str(uuid.uuid4())
+        valid_payload = json.dumps({"id": valid_id, "service": "test", "level": "INFO", "message": "ok", "timestamp": "2026-06-20T10:00:00Z"}).encode("utf-8")
+        
+        # Poison pill (missing 'service' field violates DB constraint)
+        poison_id = str(uuid.uuid4())
+        poison_payload = json.dumps({"id": poison_id, "service": None, "level": "INFO", "message": "bad", "timestamp": "2026-06-20T10:00:00Z"}).encode("utf-8")
+
+        await kafka_producer.send_and_wait(ingest_topic, valid_payload)
+        await kafka_producer.send_and_wait(ingest_topic, poison_payload)
+
+        os.environ["KAFKA_BOOTSTRAP"] = bootstrap_servers
+        consumer = LogWriterConsumer()
+        consumer.topic = ingest_topic
+        consumer.dead_letter_topic = dlq_topic
+        consumer.group_id = "test-fallback-group"
+        consumer._pg_pool = pg_pool
+        consumer._redis = redis_client
+        
+        # Start consumer loop
+        task = asyncio.create_task(consumer.start())
+        await asyncio.sleep(2)  # Allow processing
+        
+        consumer._running = False
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        # 1. Verify valid message inserted
+        async with pg_pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM logs WHERE id = $1", valid_id)
+            assert row is not None
+
+        # 2. Verify metric incremented
+        fallback_count = await redis_client.get("metrics:batch_insert_fallback_total")
+        assert fallback_count == "1"
+
+        # 3. Verify poison pill in real DLQ
+        dlq_verifier = AIOKafkaConsumer(
+            dlq_topic,
+            bootstrap_servers=bootstrap_servers,
+            group_id="test-dlq-verifier",
+            auto_offset_reset="earliest"
+        )
+        await dlq_verifier.start()
+        try:
+            msg = await asyncio.wait_for(dlq_verifier.getone(), timeout=3.0)
+            envelope = json.loads(msg.value)
+            assert envelope["original_topic"] == ingest_topic
+            assert "bad" in envelope["original_value"]
+        finally:
+            await dlq_verifier.stop()
+
+
+# ============================================================
+# Additional MetricsConsumer tests
+# ============================================================
+
+
+class TestMetricsConsumerAdvanced:
+    """Advanced MetricsConsumer tests."""
+
+    @pytest.mark.asyncio
+    async def test_multiple_messages_increment_correctly(self, redis_client):
+        """Process 5 messages with mixed services/levels, verify all counters are exact."""
+        from metrics_consumer import MetricsConsumer
+
+        consumer = MetricsConsumer()
+        consumer._redis = redis_client
+
+        messages = [
+            {"service": "api", "level": "INFO", "message": "req 1"},
+            {"service": "api", "level": "ERROR", "message": "req 2"},
+            {"service": "db", "level": "ERROR", "message": "req 3"},
+            {"service": "api", "level": "INFO", "message": "req 4"},
+            {"service": "worker", "level": "WARNING", "message": "req 5"},
+        ]
+
+        for msg_data in messages:
+            msg = MagicMock()
+            msg.value = json.dumps(msg_data).encode("utf-8")
+            await consumer.process(msg)
+
+        # Verify totals
+        total = await redis_client.get("metrics:total")
+        assert total == "5"
+
+        # Verify per-service
+        assert await redis_client.hget("metrics:services", "api") == "3"
+        assert await redis_client.hget("metrics:services", "db") == "1"
+        assert await redis_client.hget("metrics:services", "worker") == "1"
+
+        # Verify per-level
+        assert await redis_client.hget("metrics:levels", "INFO") == "2"
+        assert await redis_client.hget("metrics:levels", "ERROR") == "2"
+        assert await redis_client.hget("metrics:levels", "WARNING") == "1"
+
+        # Verify cross-dimension
+        assert await redis_client.hget("metrics:service_levels", "api:INFO") == "2"
+        assert await redis_client.hget("metrics:service_levels", "api:ERROR") == "1"
+        assert await redis_client.hget("metrics:service_levels", "db:ERROR") == "1"
+
+    @pytest.mark.asyncio
+    async def test_malformed_message_raises_for_retry(self, redis_client):
+        """Non-JSON message raises exception, triggering BaseConsumer's retry path."""
+        from metrics_consumer import MetricsConsumer
+
+        consumer = MetricsConsumer()
+        consumer._redis = redis_client
+
+        msg = MagicMock()
+        msg.value = b"this is not json"
+
+        with pytest.raises(Exception):
+            await consumer.process(msg)
+

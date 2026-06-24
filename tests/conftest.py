@@ -68,6 +68,23 @@ def sample_error_event():
 
 
 @pytest.fixture
+def sample_oversized_metadata():
+    """Create metadata dict that exceeds 8KB when JSON-encoded."""
+    # Each key-value pair is ~20 bytes; 500 pairs ≈ 10KB
+    return {f"key_{i}": f"value_{i}_padding_{'x' * 10}" for i in range(500)}
+
+
+@pytest.fixture
+def sample_multibyte_message():
+    """
+    Create a message using CJK characters that is under 8192 chars
+    but over 8192 bytes when UTF-8 encoded.
+    Each CJK character is 3 bytes in UTF-8, so 2731 chars = 8193 bytes.
+    """
+    return "日" * 2731
+
+
+@pytest.fixture
 def sample_kafka_message(sample_log_event):
     """Create a mock Kafka message containing the sample log event."""
     message = MagicMock()
@@ -176,5 +193,8 @@ async def async_client(redis_container, postgres_container, kafka_container):
     
     transport = ASGITransport(app=app)
     async with app.router.lifespan_context(app):
+        # Flush Redis to ensure rate limit keys from previous tests don't leak
+        await app.state.redis.flushdb()
         async with AsyncClient(transport=transport, base_url="http://testserver") as client:
             yield client
+

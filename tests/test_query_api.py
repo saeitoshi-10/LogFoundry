@@ -336,3 +336,167 @@ class TestQueryEndpoints:
         assert 'logfoundry_logs_by_level{level="CRITICAL"} 7' in text
         assert 'logfoundry_logs_by_service_level{service="test-metrics-service",level="CRITICAL"} 7' in text
         assert 'logfoundry_alerts_total{service="test-metrics-service",level="CRITICAL"} 3' in text
+
+    @pytest.mark.asyncio
+    async def test_query_with_time_range_filters(self, async_client, pg_pool):
+        """Insert logs at different timestamps, query with since/until, verify filtering."""
+        async with pg_pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO logs (id, service, level, message, timestamp) VALUES "
+                "($1, 'time-svc', 'INFO', 'early log', $2), "
+                "($3, 'time-svc', 'INFO', 'target log', $4), "
+                "($5, 'time-svc', 'INFO', 'late log', $6)",
+                '44444444-4444-4444-4444-444444444441', datetime(2026, 6, 10, tzinfo=timezone.utc),
+                '44444444-4444-4444-4444-444444444442', datetime(2026, 6, 15, tzinfo=timezone.utc),
+                '44444444-4444-4444-4444-444444444443', datetime(2026, 6, 25, tzinfo=timezone.utc),
+            )
+
+        # Query for only the middle time range
+        response = await async_client.get(
+            "/query?service=time-svc&since=2026-06-12T00:00:00Z&until=2026-06-20T00:00:00Z"
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["count"] == 1
+        assert data["results"][0]["message"] == "target log"
+
+
+# ============================================================
+# Full-text search tests
+# ============================================================
+
+
+class TestFullTextSearch:
+    """Tests for PostgreSQL full-text search correctness."""
+
+    @pytest.mark.asyncio
+    async def test_full_text_search_returns_matching_logs(self, pg_pool):
+        """Insert 3 logs, search for a phrase, verify only matching logs return."""
+        async with pg_pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO logs (id, service, level, message, timestamp) VALUES "
+                "($1, 'search-svc', 'INFO', 'user login successful', $2), "
+                "($3, 'search-svc', 'ERROR', 'database connection refused', $4), "
+                "($5, 'search-svc', 'WARNING', 'connection timeout after 30s', $6)",
+                '55555555-5555-5555-5555-555555555551', datetime(2026, 6, 15, tzinfo=timezone.utc),
+                '55555555-5555-5555-5555-555555555552', datetime(2026, 6, 15, 1, tzinfo=timezone.utc),
+                '55555555-5555-5555-5555-555555555553', datetime(2026, 6, 15, 2, tzinfo=timezone.utc),
+            )
+
+        from routers.query import _build_query
+        sql, params = _build_query(
+            service=None, level=None, search="connection",
+            since=None, until=None, limit=100,
+        )
+
+        async with pg_pool.acquire() as conn:
+            results = await conn.fetch(sql, *params)
+
+        # Only the two "connection" logs should match
+        assert len(results) == 2
+        messages = {row["message"] for row in results}
+        assert "database connection refused" in messages
+        assert "connection timeout after 30s" in messages
+        assert "user login successful" not in messages
+
+    @pytest.mark.asyncio
+    async def test_full_text_search_no_match_returns_empty(self, pg_pool):
+        """Search for a phrase not in any log → empty results."""
+        from routers.query import _build_query
+        sql, params = _build_query(
+            service=None, level=None, search="xyznonexistenttermxyz",
+            since=None, until=None, limit=100,
+        )
+
+        async with pg_pool.acquire() as conn:
+            results = await conn.fetch(sql, *params)
+
+        assert len(results) == 0
+
+    @pytest.mark.asyncio
+    async def test_gin_index_used_via_explain(self, pg_pool):
+        """Verify the GIN index is actually used for full-text search queries."""
+        from routers.query import _build_query
+        sql, params = _build_query(
+            service=None, level=None, search="connection refused",
+            since=None, until=None, limit=100,
+        )
+
+        # Build EXPLAIN query with parameter substitution
+        explain_sql = f"EXPLAIN (FORMAT TEXT) {sql}"
+
+        async with pg_pool.acquire() as conn:
+            explain_output = await conn.fetch(explain_sql, *params)
+            explain_text = "\n".join(row[0] for row in explain_output)
+
+        # The planner should reference the GIN index
+        assert "logs_message_gin" in explain_text or "Bitmap" in explain_text
+
+
+# ============================================================
+# Query edge case tests
+# ============================================================
+
+
+class TestQueryEdgeCases:
+    """Tests for query boundary conditions."""
+
+    @pytest.mark.asyncio
+    async def test_query_empty_table_returns_empty(self, async_client, pg_pool):
+        """Query on a freshly truncated table returns count: 0."""
+        # pg_pool fixture already truncates, so table is empty
+        response = await async_client.get("/query?service=nonexistent")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["count"] == 0
+        assert data["results"] == []
+
+    @pytest.mark.asyncio
+    async def test_query_limit_enforcement(self, pg_pool):
+        """Insert 20 logs, query with limit=5, verify exactly 5 results."""
+        from routers.query import _build_query
+
+        async with pg_pool.acquire() as conn:
+            for i in range(20):
+                await conn.execute(
+                    "INSERT INTO logs (id, service, level, message, timestamp) VALUES "
+                    "($1, 'limit-svc', 'INFO', $2, $3)",
+                    f'66666666-6666-6666-6666-6666666600{i:02d}',
+                    f"log message {i}",
+                    datetime(2026, 6, 15, i % 24, tzinfo=timezone.utc),
+                )
+
+        sql, params = _build_query(
+            service="limit-svc", level=None, search=None,
+            since=None, until=None, limit=5,
+        )
+
+        async with pg_pool.acquire() as conn:
+            results = await conn.fetch(sql, *params)
+
+        assert len(results) == 5
+
+
+# ============================================================
+# Fallback metric exposure tests
+# ============================================================
+
+
+class TestFallbackMetricExposure:
+    """Tests verifying the batch insert fallback metric is exposed on /metrics."""
+
+    @pytest.mark.asyncio
+    async def test_metrics_exposes_batch_insert_fallback_total(self, async_client, redis_client):
+        """
+        Seed metrics:batch_insert_fallback_total in Redis, hit /metrics,
+        verify logfoundry_batch_insert_fallback_total appears in output.
+        """
+        await redis_client.set("metrics:batch_insert_fallback_total", 42)
+
+        response = await async_client.get("/metrics")
+        assert response.status_code == 200
+
+        text = response.text
+        assert "logfoundry_batch_insert_fallback_total 42" in text
+        assert "# TYPE logfoundry_batch_insert_fallback_total counter" in text
+
