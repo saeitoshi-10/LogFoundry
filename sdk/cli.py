@@ -82,9 +82,10 @@ def _api_request(endpoint: str, path: str, params: dict) -> dict:
     for k, v in params.items():
         if v is not None:
             if isinstance(v, datetime):
-                query_parts.append(f"{k}={v.isoformat()}")
+                val_str = v.isoformat()
             else:
-                query_parts.append(f"{k}={urllib.request.quote(str(v))}")
+                val_str = str(v)
+            query_parts.append(f"{k}={urllib.request.quote(val_str)}")
 
     url = f"{endpoint}{path}"
     if query_parts:
