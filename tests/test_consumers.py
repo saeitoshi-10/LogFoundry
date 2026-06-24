@@ -305,11 +305,12 @@ class TestLogWriter:
         valid_msg.partition = 0
         valid_msg.offset = 1
 
-        # Create a DB-level POISON PILL message (timestamp out of partition bounds, e.g. year 1999)
+        # Create a DB-level POISON PILL message (violates NOT NULL constraint on 'service')
+        # Previously we used an out-of-bounds timestamp, but the new logs_default partition catches those.
         poison_msg = MagicMock()
         poison_payload = valid_payload.copy()
         poison_payload["id"] = str(uuid.uuid4())
-        poison_payload["timestamp"] = "1999-01-01T00:00:00Z"
+        poison_payload["service"] = None  # service is TEXT NOT NULL in DB
         poison_msg.value = json.dumps(poison_payload).encode("utf-8")
         poison_msg.partition = 0
         poison_msg.offset = 2

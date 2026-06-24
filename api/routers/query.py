@@ -274,6 +274,13 @@ async def get_metrics(request: Request, response: Response):
                 f'logfoundry_logs_by_service_level{{service="{sl_service}",level="{sl_level}"}} {int(val) if val else 0}'
             )
 
+    # Batch Insert Fallback Counter
+    lines.append("")
+    lines.append("# HELP logfoundry_batch_insert_fallback_total Total times batch insert hit a poison pill and fell back to single inserts")
+    lines.append("# TYPE logfoundry_batch_insert_fallback_total counter")
+    fallback_total = await redis.get("metrics:batch_insert_fallback_total")
+    lines.append(f"logfoundry_batch_insert_fallback_total {int(fallback_total) if fallback_total else 0}")
+
     # Alert counters
     lines.append("")
     lines.append("# HELP logfoundry_alerts_total Alerts triggered by pattern matching")

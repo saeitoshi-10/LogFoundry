@@ -46,6 +46,8 @@ CREATE TABLE IF NOT EXISTS logs_2026_08 PARTITION OF logs
 CREATE TABLE IF NOT EXISTS logs_2026_09 PARTITION OF logs
     FOR VALUES FROM ('2026-09-01') TO ('2026-10-01');
 
+CREATE TABLE IF NOT EXISTS logs_default PARTITION OF logs DEFAULT;
+
 -- ============================================================
 -- Indexes (created on the parent table — PostgreSQL propagates to partitions)
 -- ============================================================

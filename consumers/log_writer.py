@@ -243,9 +243,9 @@ class LogWriterConsumer(BaseConsumer):
                         },
                     )
 
-                    # Commit offset AFTER successful insert — this is the key
-                    # to at-least-once delivery. If we crash here, the messages
-                    # will be re-delivered and ON CONFLICT DO NOTHING handles dedup.
+                if messages:
+                    # Commit offsets AFTER successful multi-partition insert batch
+                    # This is the key to at-least-once delivery without cross-partition leaks.
                     await self._consumer.commit()
 
             except Exception as e:

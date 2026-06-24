@@ -170,9 +170,10 @@ class BaseConsumer(ABC):
                     for message in batch:
                         await self._run_with_retry(message)
 
-                    # Commit offset after successfully processing the entire batch
-                    # for this topic-partition. This is at-least-once semantics:
-                    # if we crash between processing and commit, messages are re-delivered.
+                if messages:
+                    # Commit offsets for all processed partitions at once.
+                    # This prevents cross-partition leaks where a crash in tp1 
+                    # loses data if we committed with no args after tp0.
                     await self._consumer.commit()
 
             except Exception as e:
