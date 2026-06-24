@@ -16,6 +16,7 @@ This is an intentional design choice: the caller should treat 202 as
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 
@@ -82,11 +83,18 @@ async def ingest(
     """
     producer = request.app.state.kafka_producer
 
+    if producer.is_queue_full:
+        raise HTTPException(
+            status_code=503,
+            detail="Service Unavailable: Ingestion queue full",
+            headers={"Retry-After": "1"},
+        )
+
     # Fire-and-forget — the Kafka produce runs as a background task.
     # This is what gives us sub-5ms response times.
     producer.send_fire_and_forget(event)
 
-    logger.info(
+    logger.debug(
         "Event accepted",
         extra={
             "event_id": str(event.id),
@@ -124,12 +132,25 @@ async def ingest_batch(
     """
     producer = request.app.state.kafka_producer
 
+    if producer.is_queue_full:
+        raise HTTPException(
+            status_code=503,
+            detail="Service Unavailable: Ingestion queue full",
+            headers={"Retry-After": "1"},
+        )
+
     ids = []
+    tasks = []
     for event in batch.events:
-        producer.send_fire_and_forget(event)
+        tasks.append(producer.send(event))
         ids.append(event.id)
 
-    logger.info(
+    # Await all produces. This enforces strict backpressure: if Kafka is slow
+    # or the queue is saturated, the HTTP handler blocks. This prevents infinite
+    # memory buffering and OOM crashes under extreme load.
+    await asyncio.gather(*tasks)
+
+    logger.debug(
         "Batch accepted",
         extra={"count": len(batch.events)},
     )

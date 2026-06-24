@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from typing import Optional
 
@@ -45,6 +46,12 @@ class KafkaLogProducer:
         self._topic = topic
         self._producer: Optional[AIOKafkaProducer] = None
         self._background_tasks: set[asyncio.Task] = set()
+        self.max_tasks = int(os.getenv("MAX_FIRE_AND_FORGET_TASKS", "5000"))
+
+    @property
+    def is_queue_full(self) -> bool:
+        """Check if the fire-and-forget queue has reached its maximum bounded capacity."""
+        return len(self._background_tasks) >= self.max_tasks
 
     async def start(self) -> None:
         """Initialize and start the Kafka producer."""

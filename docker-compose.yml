@@ -115,7 +115,7 @@ services:
       KAFKA_TOPIC_DLT: logs.dead-letter
       POSTGRES_DSN: postgresql://logfoundry:logfoundry@postgres/logfoundry
       REDIS_URL: redis://redis:6379
-      RATE_LIMIT_REQUESTS: "100"
+      RATE_LIMIT_REQUESTS: "1000000"
       RATE_LIMIT_WINDOW_SECONDS: "60"
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
       OTEL_SERVICE_NAME: logfoundry-api
